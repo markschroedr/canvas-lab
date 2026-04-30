@@ -127,6 +127,11 @@ def build_prompt(payload: dict, history: list[dict], cwd: Path) -> str:
     file_path = payload.get("file") or "canvas.jsx"
     selector = payload.get("selector") or "(none)"
     message = payload.get("message") or ""
+    selected_element_context = (
+        f'The user has marked this element and is referring to it: `{selector}`.'
+        if selector != "(none)"
+        else "The user has not marked a specific element."
+    )
 
     history_lines = []
     for item in history:
@@ -150,8 +155,8 @@ Current project folder:
 Current file:
 {file_path}
 
-Current selected element:
-{selector}
+Current marked element:
+{selected_element_context}
 
 Full chat history:
 {chr(10).join(history_lines) if history_lines else "(empty)"}
@@ -161,6 +166,7 @@ Current user request:
 
 Rules:
 - Edit files directly in this project folder when the request asks for a change.
+- If a current marked element is present, treat it as the user's target unless the request clearly says otherwise.
 - Keep `canvas.jsx` focused on the board composition: `DCSection`, `DCArtboard`, and project metadata.
 - Use `components/*.jsx` for reusable or larger screens, especially when creating multiple screens or flows.
 - Component files should assign exported components to `window`, for example: `window.LoginScreen = LoginScreen`.
