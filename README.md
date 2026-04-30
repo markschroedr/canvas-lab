@@ -10,6 +10,11 @@ Use Codex or Claude Code to wireframe directly in files. The browser is just the
 
 Double-click `start.command`.
 
+Requirements:
+
+- Python 3 for the local server.
+- Codex CLI or Claude Code CLI only if you want the chat to edit files.
+
 Or:
 
 ```sh
