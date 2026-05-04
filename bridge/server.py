@@ -349,6 +349,19 @@ def copy_project(source: str | None, target: str | None) -> str:
     return target_name
 
 
+def delete_project(project: str | None) -> str:
+    project_name = safe_name(project)
+    if project_name == "default":
+        raise ValueError("default project cannot be deleted")
+
+    target_path = project_dir(project_name)
+    if not target_path.exists():
+        raise ValueError(f"project does not exist: {project_name}")
+
+    shutil.rmtree(target_path)
+    return project_name
+
+
 class BridgeHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -415,6 +428,19 @@ class BridgeHandler(SimpleHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "project": project})
             except Exception as exc:
                 self.send_json(500, {"ok": False, "error": str(exc)})
+            return
+
+        if parsed.path == "/delete-project":
+            payload = read_json(self)
+            project = payload.get("project") or "default"
+            if read_status(project, payload.get("chat") or "default").get("state") == "running":
+                self.send_json(409, {"ok": False, "error": "cannot delete a project while its agent is running"})
+                return
+            try:
+                deleted = delete_project(project)
+                self.send_json(200, {"ok": True, "deleted": deleted})
+            except Exception as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
             return
 
         if parsed.path == "/clear-history":

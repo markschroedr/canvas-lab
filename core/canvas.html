@@ -217,6 +217,31 @@
       box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 82%);
     }
 
+    .project-delete-button {
+      flex: 0 0 30px;
+      width: 30px;
+      height: 30px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--faint);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }
+
+    .project-delete-button:hover:not(:disabled) {
+      border-color: color-mix(in oklch, var(--danger), var(--line) 35%);
+      background: color-mix(in oklch, var(--danger), transparent 92%);
+      color: var(--danger);
+    }
+
+    .project-delete-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.38;
+    }
+
     .selection-context,
     .agent-status {
       display: grid;
@@ -1369,6 +1394,17 @@
       );
     }
 
+    function TrashIcon() {
+      return (
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M2.6 4.3h10.8" />
+          <path d="M6.2 2.4h3.6l.5 1.9H5.7l.5-1.9Z" />
+          <path d="M5 6.4v5.1M8 6.4v5.1M11 6.4v5.1" />
+          <path d="M4.1 4.3l.5 9.1h6.8l.5-9.1" />
+        </svg>
+      );
+    }
+
     function AgentPanel({ project, selected, theme, toggleTheme, panelWidth, setPanelWidth }) {
       const [agent, setAgent] = useState("codex");
       const [messages, setMessages] = useState([]);
@@ -1569,6 +1605,25 @@
         window.location.href = projectUrl(payload.project);
       }
 
+      async function deleteCurrentProject() {
+        if (project === "default" || running) return;
+        const confirmed = window.confirm(`Delete project "${project}"?\n\nThis permanently removes its canvas files, components, chats, and attachments from this local workspace.`);
+        if (!confirmed) return;
+
+        setError("");
+        const response = await fetch("/delete-project", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ project, chat: "default" })
+        });
+        const payload = await response.json();
+        if (!payload.ok) {
+          setError(payload.error || "Could not delete project.");
+          return;
+        }
+        window.location.href = projectUrl("default");
+      }
+
       return (
         <aside className="agent-panel">
           <header className="agent-header">
@@ -1594,6 +1649,16 @@
               <select className="project-select" value={project} onChange={(event) => { window.location.href = projectUrl(event.target.value); }}>
                 {projects.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
+              <button
+                className="project-delete-button"
+                type="button"
+                onClick={deleteCurrentProject}
+                disabled={project === "default" || running}
+                aria-label={`Delete project ${project}`}
+                title={project === "default" ? "Default project cannot be deleted" : "Delete current project"}
+              >
+                <TrashIcon />
+              </button>
             </div>
             <div className="project-row">
               <span>New</span>
