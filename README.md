@@ -48,3 +48,5 @@ chats/
 Agents mostly edit `canvas.jsx` and `components/*.jsx`.
 
 Canvas mode is for flows/variants. Page mode is for one fullscreen responsive page.
+
+Use `Export` in the top bar to download a standalone HTML viewer or open a print/PDF view.

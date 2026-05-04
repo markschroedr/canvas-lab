@@ -75,6 +75,251 @@ def project_version(project: str | None) -> str:
     return "|".join(parts)
 
 
+def script_text(value: str) -> str:
+    return value.replace("</script", "<\\/script")
+
+
+def build_export_html(project: str | None, mode: str = "download") -> str:
+    project_name = safe_name(project)
+    path = project_dir(project_name)
+    files = project_jsx_files(project_name)
+    scripts = []
+    for file in files:
+        source_path = path / file
+        if not source_path.exists():
+            continue
+        source = script_text(source_path.read_text(encoding="utf-8"))
+        scripts.append(f'<script type="text/babel" data-file="{file}">\n(() => {{\n{source}\n}})();\n</script>')
+
+    auto_print = (
+        "<script>window.addEventListener('load', () => setTimeout(() => window.print(), 500));</script>"
+        if mode == "print"
+        else ""
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{project_name} · Design Canvas Export</title>
+  <link rel="icon" href="data:,">
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+  <style>
+    :root {{
+      --page: oklch(98% 0.003 250);
+      --surface: oklch(100% 0 0);
+      --ink: oklch(22% 0.012 250);
+      --muted: oklch(50% 0.012 250);
+      --line: oklch(91% 0.006 250);
+      --canvas-dot: oklch(88% 0.012 250);
+      --shadow: 0 1px 2px oklch(20% 0.02 250 / 0.04), 0 18px 44px oklch(20% 0.02 250 / 0.1);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color-scheme: light;
+    }}
+
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle, var(--canvas-dot) 1px, transparent 1px) 0 0 / 24px 24px,
+        var(--page);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      text-wrap: pretty;
+    }}
+
+    button, input, textarea, select {{ font: inherit; }}
+    .export-shell {{ min-height: 100vh; }}
+    .export-toolbar {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 56px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in oklch, var(--surface), transparent 4%);
+      backdrop-filter: blur(16px);
+    }}
+    .export-title {{ display: grid; gap: 2px; min-width: 0; }}
+    .export-title strong {{ font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+    .export-title span {{ color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+    .export-action {{
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 0 12px;
+      cursor: pointer;
+    }}
+
+    .canvas-viewport {{
+      position: relative;
+      min-height: calc(100vh - 56px);
+      overflow: auto;
+      padding: 96px 96px 160px;
+    }}
+    .canvas-world {{
+      position: relative;
+      width: 2400px;
+      height: 1500px;
+      transform-origin: 0 0;
+    }}
+    .page-viewport {{
+      min-height: calc(100vh - 56px);
+      background: var(--page);
+    }}
+    .page-shell {{
+      width: 100%;
+      min-height: calc(100vh - 56px);
+      margin: 0 auto;
+      background: var(--surface);
+    }}
+    .dc-page {{ min-width: 0; min-height: 100%; }}
+    .dc-section {{ position: absolute; display: grid; gap: 18px; }}
+    .dc-section-heading {{ display: grid; gap: 3px; color: var(--muted); font-size: 12px; user-select: none; }}
+    .dc-section-heading strong {{ color: var(--ink); font-size: 14px; }}
+    .dc-section-artboards {{ position: relative; }}
+    .artboard-frame {{ position: absolute; display: grid; gap: 8px; }}
+    .artboard-meta {{ display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; user-select: none; }}
+    .artboard {{
+      position: relative;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }}
+    .artboard > * {{ min-width: 0; max-width: 100%; min-height: 0; height: 100%; }}
+    .dc-screen {{
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 16px;
+      overflow: hidden;
+    }}
+    .dc-screen-body {{
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      overflow: auto;
+    }}
+    .screen-kicker {{ color: var(--muted); font-size: 12px; }}
+    .screen-heading {{ margin: 0; max-width: 15ch; font-size: 26px; line-height: 1.05; letter-spacing: 0; }}
+    .screen-copy {{ margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }}
+
+    @media print {{
+      body {{ background: white; }}
+      .export-toolbar {{ display: none; }}
+      .canvas-viewport {{ min-height: auto; padding: 0; overflow: visible; }}
+      .canvas-world {{ transform: scale(0.68); transform-origin: 0 0; }}
+      .page-viewport, .page-shell {{ min-height: auto; }}
+    }}
+  </style>
+</head>
+<body>
+  <div id="export-root"></div>
+  {"".join(scripts)}
+  <script type="text/babel">
+    const ARTBOARD = {{
+      mobile: {{ width: 390, height: 844 }},
+      mobileShort: {{ width: 390, height: 720 }},
+      desktop: {{ width: 1280, height: 820 }},
+      desktopWide: {{ width: 1440, height: 900 }}
+    }};
+
+    function DCSection({{ id, title, note, x, y, children }}) {{
+      return (
+        <section className="dc-section" style={{{{ left: x, top: y }}}} data-agent-id={{`${{id}}.section`}}>
+          <header className="dc-section-heading" data-agent-id={{`${{id}}.heading`}}>
+            <strong>{{title}}</strong>
+            {{note && <span>{{note}}</span>}}
+          </header>
+          <div className="dc-section-artboards" data-agent-id={{`${{id}}.artboards`}}>{{children}}</div>
+        </section>
+      );
+    }}
+
+    function DCArtboard({{ id, label, note, x, y, width = 390, height = 640, tone = 184, children }}) {{
+      const style = {{
+        left: x,
+        top: y,
+        width,
+        "--dc-artboard-height": `${{height}}px`,
+        "--accent": `oklch(58% 0.13 ${{tone}})`,
+        "--accent-soft": `oklch(91% 0.055 ${{tone}})`
+      }};
+      return (
+        <article className="artboard-frame" style={{style}} data-agent-id={{`${{id}}.frame`}}>
+          <div className="artboard-meta" data-agent-id={{`${{id}}.meta`}}>
+            <strong>{{label}}</strong>
+            {{note && <span>{{note}}</span>}}
+          </div>
+          <section className="artboard" style={{{{ height: "var(--dc-artboard-height)" }}}} data-agent-id={{`${{id}}.artboard`}}>
+            {{children}}
+          </section>
+        </article>
+      );
+    }}
+
+    function DCPage({{ id, children }}) {{
+      return <main className="dc-page" data-agent-id={{`${{id}}.page`}}>{{children}}</main>;
+    }}
+
+    function ExportApp() {{
+      const project = window.DesignProject;
+      if (!project?.render) return <main className="canvas-viewport">Project did not define window.DesignProject.render.</main>;
+      const isPage = project.view === "page";
+      return (
+        <div className="export-shell">
+          <header className="export-toolbar">
+            <div className="export-title">
+              <strong>{{project.title || "{project_name}"}}</strong>
+              <span>{{project.subtitle || "Design Canvas export"}}</span>
+            </div>
+            <button className="export-action" onClick={{() => window.print()}}>Print / PDF</button>
+          </header>
+          {{isPage ? (
+            <section className="page-viewport">
+              <div className="page-shell">
+                {{project.render({{ DCSection, DCArtboard, DCPage, ARTBOARD }})}}
+              </div>
+            </section>
+          ) : (
+            <section className="canvas-viewport">
+              <div className="canvas-world">
+                {{project.render({{ DCSection, DCArtboard, DCPage, ARTBOARD }})}}
+              </div>
+            </section>
+          )}}
+        </div>
+      );
+    }}
+
+    ReactDOM.createRoot(document.getElementById("export-root")).render(<ExportApp />);
+  </script>
+  {auto_print}
+</body>
+</html>
+"""
+
+
 def read_json(request) -> dict:
     length = int(request.headers.get("content-length", "0"))
     raw = request.rfile.read(length) if length else b"{}"
@@ -380,6 +625,19 @@ class BridgeHandler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def send_html(self, status: int, body: str, filename: str | None = None) -> None:
+        encoded = body.encode("utf-8")
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(encoded)))
+            if filename:
+                self.send_header("content-disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_OPTIONS(self) -> None:
         self.send_json(200, {"ok": True})
 
@@ -412,6 +670,17 @@ class BridgeHandler(SimpleHTTPRequestHandler):
             project = query.get("project", ["default"])[0]
             try:
                 self.send_json(200, {"ok": True, "project": safe_name(project), "files": project_jsx_files(project), "version": project_version(project)})
+            except Exception as exc:
+                self.send_json(500, {"ok": False, "error": str(exc)})
+            return
+
+        if parsed.path == "/export-html":
+            project = query.get("project", ["default"])[0]
+            mode = query.get("mode", ["download"])[0]
+            try:
+                html = build_export_html(project, mode)
+                filename = None if mode == "print" else f"{safe_name(project)}-canvas.html"
+                self.send_html(200, html, filename=filename)
             except Exception as exc:
                 self.send_json(500, {"ok": False, "error": str(exc)})
             return
