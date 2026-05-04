@@ -311,6 +311,41 @@
       white-space: nowrap;
     }
 
+    .agent-qa {
+      display: grid;
+      gap: 3px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-soft);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .agent-qa strong {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink);
+    }
+
+    .agent-qa span {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .agent-qa[data-state="pass"] {
+      border-color: color-mix(in oklch, var(--success), var(--line) 62%);
+      background: color-mix(in oklch, var(--success), transparent 94%);
+    }
+
+    .agent-qa[data-state="warn"],
+    .agent-qa[data-state="fail"] {
+      border-color: color-mix(in oklch, var(--warn), var(--line) 52%);
+      background: color-mix(in oklch, var(--warn), transparent 93%);
+    }
+
     /* Chat header */
     .chat-toolbar {
       display: flex;
@@ -1778,6 +1813,12 @@
               <strong>{status.state === "running" ? `${status.agent || agent} running` : status.state === "error" ? "Agent error" : status.state === "done" ? "Last run done" : "Agent idle"}</strong>
               <span>{status.state === "running" ? status.message : status.message || "No active run"}</span>
             </div>
+            {status.qa && (
+              <div className="agent-qa" data-state={status.qa.state || "unknown"}>
+                <strong>{status.qa.state === "pass" ? "QA passed" : "QA needs attention"}</strong>
+                <span>{status.qa.summary || "No QA summary"}</span>
+              </div>
+            )}
           </header>
 
           <div className="chat-toolbar">
@@ -2135,6 +2176,91 @@
       return fallback === "dark" ? "dark" : "light";
     }
 
+    function measureCanvasQa({ project, viewMode, projectVersion, loadError }) {
+      const issues = [];
+      const checks = { viewMode, artboards: 0, overflow: [], blanks: [] };
+
+      if (loadError) {
+        issues.push({ type: "load-error", message: loadError });
+      }
+
+      if (viewMode === "page") {
+        const viewport = document.querySelector(".page-viewport");
+        const shell = document.querySelector(".page-shell");
+        checks.page = {
+          viewportWidth: viewport?.clientWidth || 0,
+          scrollWidth: viewport?.scrollWidth || 0,
+          shellWidth: shell?.scrollWidth || 0
+        };
+        if (viewport && viewport.scrollWidth > viewport.clientWidth + 1) {
+          issues.push({ type: "page-overflow-x", message: `Page has horizontal overflow (${viewport.scrollWidth}px > ${viewport.clientWidth}px).` });
+        }
+      } else {
+        const artboards = [...document.querySelectorAll(".artboard")];
+        checks.artboards = artboards.length;
+
+        if (!artboards.length && !loadError) {
+          issues.push({ type: "no-artboards", message: "No artboards rendered." });
+        }
+
+        artboards.forEach((artboard, index) => {
+          const frame = artboard.closest(".artboard-frame");
+          const id = artboard.dataset.agentId || frame?.dataset.agentId || `artboard-${index + 1}`;
+          const overflow = [];
+          if (artboard.scrollWidth > artboard.clientWidth + 1) overflow.push("x");
+          if (artboard.scrollHeight > artboard.clientHeight + 1) overflow.push("y");
+
+          const bodyOverflow = [...artboard.querySelectorAll(".dc-screen-body")]
+            .filter((node) => node.scrollWidth > node.clientWidth + 1)
+            .map((node) => node.dataset.agentId || id);
+
+          if (overflow.length || bodyOverflow.length) {
+            const detail = {
+              id,
+              overflow: overflow.join("/") || null,
+              width: artboard.clientWidth,
+              scrollWidth: artboard.scrollWidth,
+              height: artboard.clientHeight,
+              scrollHeight: artboard.scrollHeight,
+              bodyOverflow
+            };
+            checks.overflow.push(detail);
+            issues.push({ type: "artboard-overflow", message: `${id} has overflow ${overflow.join("/") || "inside body"}.`, detail });
+          }
+
+          const text = artboard.innerText.trim();
+          const hasVisual = Boolean(artboard.querySelector("img, svg, canvas, video"));
+          if (text.length < 3 && !hasVisual) {
+            checks.blanks.push(id);
+            issues.push({ type: "blank-artboard", message: `${id} looks blank.` });
+          }
+        });
+      }
+
+      const state = issues.length ? "warn" : "pass";
+      const summary = issues.length
+        ? `QA needs attention · ${issues.length} issue${issues.length === 1 ? "" : "s"} · ${issues[0].message}`
+        : `QA passed · ${checks.artboards || "page"} ${viewMode === "page" ? "view" : checks.artboards === 1 ? "artboard" : "artboards"} · no overflow`;
+
+      return {
+        state,
+        summary,
+        checks,
+        issues,
+        project,
+        project_version: projectVersion || "",
+        url: window.location.href
+      };
+    }
+
+    async function postCanvasQa(project, qa) {
+      await fetch("/qa-result", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project, chat: "default", ...qa })
+      });
+    }
+
     function App() {
       const [project] = useState(INITIAL_PROJECT);
       const [designProject, setDesignProject] = useState(null);
@@ -2148,6 +2274,7 @@
       const [panelWidth, setPanelWidthState] = useState(readPanelWidthFromStorage);
       const [theme, setTheme] = useState(readThemeFromStorage);
       const projectVersionRef = useRef("");
+      const qaVersionRef = useRef("");
       const loadingProjectRef = useRef(false);
       const viewMode = designProject?.view === "page" ? "page" : "canvas";
 
@@ -2209,6 +2336,23 @@
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
       }, []);
+
+      useEffect(() => {
+        const version = loadError ? `error:${loadError}` : projectVersionRef.current;
+        if (!version || qaVersionRef.current === version) return;
+
+        const timer = window.setTimeout(async () => {
+          try {
+            const qa = measureCanvasQa({ project, viewMode, projectVersion: version, loadError });
+            qaVersionRef.current = version;
+            await postCanvasQa(project, qa);
+          } catch (_err) {
+            // QA must never block the viewer.
+          }
+        }, 220);
+
+        return () => window.clearTimeout(timer);
+      }, [designProject, loadError, project, viewMode]);
 
       function resetView() {
         setZoom(0.9);

@@ -52,6 +52,10 @@ def status_path(project: str | None, chat: str | None) -> Path:
     return project_dir(project) / "chats" / f"{safe_name(chat)}.status.json"
 
 
+def qa_path(project: str | None, chat: str | None) -> Path:
+    return project_dir(project) / "chats" / f"{safe_name(chat)}.qa.json"
+
+
 def project_jsx_files(project: str | None) -> list[str]:
     path = project_dir(project)
     component_dir = path / "components"
@@ -419,6 +423,108 @@ def write_status(project: str | None, chat: str | None, status: dict) -> None:
     path.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
 
 
+def read_qa(project: str | None, chat: str | None) -> dict | None:
+    path = qa_path(project, chat)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_qa(project: str | None, chat: str | None, qa: dict) -> None:
+    path = qa_path(project, chat)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(qa, ensure_ascii=False), encoding="utf-8")
+
+
+def git_run(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=str(cwd), text=True, capture_output=True, check=False)
+
+
+def git_has_head(cwd: Path) -> bool:
+    return git_run(cwd, ["rev-parse", "--verify", "HEAD"]).returncode == 0
+
+
+def git_has_staged_changes(cwd: Path) -> bool:
+    return git_run(cwd, ["diff", "--cached", "--quiet"]).returncode == 1
+
+
+def git_commit_hash(cwd: Path) -> str | None:
+    result = git_run(cwd, ["rev-parse", "--short", "HEAD"])
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def ensure_project_git(cwd: Path) -> dict:
+    info: dict = {"ok": True, "initialized": False, "baseline": None}
+    if not (cwd / ".git").exists():
+        result = git_run(cwd, ["init"])
+        if result.returncode != 0:
+            return {"ok": False, "error": (result.stderr or result.stdout).strip()}
+        info["initialized"] = True
+
+    ignore_path = cwd / ".gitignore"
+    ignore_lines = ["chats/", "attachments/", "qa/", ".DS_Store"]
+    existing = ignore_path.read_text(encoding="utf-8").splitlines() if ignore_path.exists() else []
+    additions = [line for line in ignore_lines if line not in existing]
+    if additions:
+        with ignore_path.open("a", encoding="utf-8") as handle:
+            if existing and existing[-1].strip():
+                handle.write("\n")
+            handle.write("\n".join(additions) + "\n")
+
+    git_run(cwd, ["config", "user.name", "Canvas Lab"])
+    git_run(cwd, ["config", "user.email", "canvas-lab@local"])
+
+    if not git_has_head(cwd):
+        git_run(cwd, ["add", "-A"])
+        if git_has_staged_changes(cwd):
+            commit = git_run(cwd, ["commit", "-m", "Initial project snapshot"])
+            if commit.returncode == 0:
+                info["baseline"] = git_commit_hash(cwd)
+            else:
+                return {"ok": False, "error": (commit.stderr or commit.stdout).strip()}
+
+    return info
+
+
+def summarize_commit_message(agent: str, message: str) -> str:
+    summary = "update canvas"
+    for line in (message or "").splitlines():
+        line = line.strip()
+        if line:
+            summary = line
+            break
+    summary = re.sub(r"\s+", " ", summary)
+    if len(summary) > 72:
+        summary = summary[:69].rstrip() + "..."
+    return f"{agent}: {summary}"
+
+
+def commit_project_changes(cwd: Path, agent: str, message: str) -> dict:
+    try:
+        setup = ensure_project_git(cwd)
+        if not setup.get("ok"):
+            return {"ok": False, "error": setup.get("error") or "could not initialize project git"}
+
+        git_run(cwd, ["add", "-A"])
+        if not git_has_staged_changes(cwd):
+            return {"ok": True, "changed": False, "message": "No project file changes to commit.", "baseline": setup.get("baseline")}
+
+        commit = git_run(cwd, ["commit", "-m", summarize_commit_message(agent, message)])
+        if commit.returncode != 0:
+            return {"ok": False, "error": (commit.stderr or commit.stdout).strip(), "baseline": setup.get("baseline")}
+
+        return {
+            "ok": True,
+            "changed": True,
+            "commit": git_commit_hash(cwd),
+            "baseline": setup.get("baseline"),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def combined_output(stdout: str, stderr: str) -> str:
     parts = []
     if stdout.strip():
@@ -490,6 +596,10 @@ def build_prompt(payload: dict, history: list[dict], cwd: Path) -> str:
     file_path = payload.get("file") or "canvas.jsx"
     selector = payload.get("selector") or "(none)"
     message = payload.get("message") or ""
+    project = payload.get("project") or cwd.name
+    chat = payload.get("chat") or "default"
+    qa = read_qa(project, chat)
+    qa_summary = qa.get("summary") if qa else ""
     current_attachments = attachment_lines(payload.get("attachments"))
     selected_element_context = (
         f'The user has marked this element and is referring to it: `{selector}`.'
@@ -528,6 +638,9 @@ Current marked element:
 
 Attached images for the current user request:
 {chr(10).join(current_attachments) if current_attachments else "(none)"}
+
+Latest automatic canvas QA:
+{qa_summary or "(none yet)"}
 
 Full chat history:
 {chr(10).join(history_lines) if history_lines else "(empty)"}
@@ -587,6 +700,7 @@ def agent_command(agent: str, prompt: str, cwd: Path) -> list[str]:
 
 def run_agent_job(payload: dict, project: str, chat: str, agent: str, cwd: Path, started_at: str) -> None:
     try:
+        git_setup = ensure_project_git(cwd)
         history = read_history(project, chat)
         prompt = build_prompt(payload, history, cwd)
         command = agent_command(agent, prompt, cwd)
@@ -594,6 +708,11 @@ def run_agent_job(payload: dict, project: str, chat: str, agent: str, cwd: Path,
         output = (result.stdout or "").strip()
         error_output = (result.stderr or "").strip()
         content = chat_content(agent, result.returncode, output, error_output)
+        git_commit = (
+            commit_project_changes(cwd, agent, payload.get("message", ""))
+            if result.returncode == 0
+            else {"ok": False, "skipped": True, "message": "Skipped commit because agent run failed."}
+        )
         finished_at = now_iso()
         append_history(
             project,
@@ -603,22 +722,26 @@ def run_agent_job(payload: dict, project: str, chat: str, agent: str, cwd: Path,
                 "content": content,
                 "agent": agent,
                 "exit_code": result.returncode,
+                "git": git_commit,
                 "ts": finished_at,
             },
         )
-        write_status(
-            project,
-            chat,
-            {
-                "state": "done" if result.returncode == 0 else "error",
-                "agent": agent,
-                "exit_code": result.returncode,
-                "message": content,
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "project_version": project_version(project),
-            },
-        )
+        status = {
+            "state": "done" if result.returncode == 0 else "error",
+            "agent": agent,
+            "exit_code": result.returncode,
+            "message": content,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "project_version": project_version(project),
+            "git": git_commit,
+        }
+        if not git_setup.get("ok"):
+            status["git_setup_error"] = git_setup.get("error")
+        qa = read_qa(project, chat)
+        if qa:
+            status["qa"] = qa
+        write_status(project, chat, status)
     except Exception as exc:
         finished_at = now_iso()
         append_history(project, chat, {"role": "agent", "content": str(exc), "agent": agent, "exit_code": 1, "ts": finished_at})
@@ -648,7 +771,7 @@ def copy_project(source: str | None, target: str | None) -> str:
         return target_name
 
     def ignore(_dir: str, names: list[str]) -> set[str]:
-        return {"chats"} & set(names)
+        return {".git", "chats", "attachments", "qa"} & set(names)
 
     shutil.copytree(source_path, target_path, ignore=ignore)
     (target_path / "chats").mkdir(parents=True, exist_ok=True)
@@ -724,7 +847,11 @@ class BridgeHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/status":
             project = query.get("project", ["default"])[0]
             chat = query.get("chat", ["default"])[0]
-            self.send_json(200, {"ok": True, "project": safe_name(project), "chat": safe_name(chat), "status": read_status(project, chat)})
+            status = read_status(project, chat)
+            qa = read_qa(project, chat)
+            if qa:
+                status["qa"] = qa
+            self.send_json(200, {"ok": True, "project": safe_name(project), "chat": safe_name(chat), "status": status})
             return
 
         if parsed.path == "/project-files":
@@ -778,6 +905,9 @@ class BridgeHandler(SimpleHTTPRequestHandler):
             path = chat_path(payload.get("project", "default"), payload.get("chat", "default"))
             if path.exists():
                 path.unlink()
+            qa = qa_path(payload.get("project", "default"), payload.get("chat", "default"))
+            if qa.exists():
+                qa.unlink()
             write_status(payload.get("project", "default"), payload.get("chat", "default"), {"state": "idle"})
             self.send_json(200, {"ok": True})
             return
@@ -787,6 +917,28 @@ class BridgeHandler(SimpleHTTPRequestHandler):
             try:
                 attachment = save_attachment(payload)
                 self.send_json(200, {"ok": True, "attachment": attachment})
+            except Exception as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+
+        if parsed.path == "/qa-result":
+            payload = read_json(self)
+            project = payload.get("project") or "default"
+            chat = payload.get("chat") or "default"
+            qa = {
+                "state": payload.get("state") or "unknown",
+                "summary": payload.get("summary") or "",
+                "checks": payload.get("checks") or {},
+                "issues": payload.get("issues") or [],
+                "project_version": payload.get("project_version") or project_version(project),
+                "ts": now_iso(),
+            }
+            try:
+                write_qa(project, chat, qa)
+                status = read_status(project, chat)
+                status["qa"] = qa
+                write_status(project, chat, status)
+                self.send_json(200, {"ok": True, "qa": qa})
             except Exception as exc:
                 self.send_json(400, {"ok": False, "error": str(exc)})
             return

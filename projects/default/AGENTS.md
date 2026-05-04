@@ -52,8 +52,11 @@ Apply those decisions consistently. Record them briefly in the file or in the ag
 - The canvas can include a left-side chat panel that starts local agents.
 - Keep the bridge simple: local Python server, JSONL history, no database, no queue system unless it becomes necessary.
 - Full chat history is stored in `chats/*.jsonl` and passed to the agent.
+- The latest automatic Canvas QA result is stored in `chats/*.qa.json` and passed to the next agent prompt.
 - CLI calls to `codex` and `claude` are allowed because these agents are expected to edit the same local project files.
 - The browser does not directly mutate design files. It sends message, target file, and selector context to the bridge; the CLI agent edits files.
+- Each project may have its own local `.git` repo. The bridge creates a baseline snapshot and commits successful agent edits automatically.
+- Project-local git ignores `chats/`, `attachments/`, and `qa/` by default so versioning stays focused on design files.
 
 ## Canvas Model
 
@@ -115,6 +118,13 @@ The canvas is a renderer, not a visual editor. The agent edits JSX/HTML directly
 - Avoid hard inner widths larger than the artboard. Use `width: 100%`, `max-width: 100%`, and `min-width: 0`.
 - For lists and rows, use `minmax(0, 1fr)` instead of plain `1fr` when actions sit beside text.
 - If the canvas shows a red `overflow x` or `overflow y` marker, the wireframe is not done. Fix density, wrapping, scroll areas, or artboard size.
+
+## Automatic QA
+
+- After the browser renders a project, it runs a lightweight QA check.
+- Current checks: project load state, artboard count, artboard overflow, body horizontal overflow, blank artboards, and Page View horizontal overflow.
+- A passing QA result means the visible artifact rendered and no obvious overflow was found.
+- A warning means the next agent should fix the reported issue before continuing visual exploration.
 
 ## Design Rules
 
